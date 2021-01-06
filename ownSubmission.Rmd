@@ -1,0 +1,460 @@
+---
+title: "CYO"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup2,include=FALSE}
+
+#########SET UP
+
+if(!require(readxl)) install.packages("readxl", repos = "http://cran.us.r-project.org")
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(gridExtra)) install.packages("gridExtra", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(zoo)) install.packages("zoo", repos = "http://cran.us.r-project.org")
+if(!require(forecast)) install.packages("forecast", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(psych)) install.packages("psych", repos = "http://cran.us.r-project.org")
+
+
+#load libraries
+library(readxl)
+library(tidyverse)
+library(gridExtra)
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(forecast)
+library(caret)
+library(psych)
+
+getwd()
+setwd("C:/Users/Aljoscha/Documents/R/homework-0/ownproject")
+
+
+crimedata <- read_excel("Boston Crime.xlsx")
+
+#substituting "Y" (Yes) by 1 (Yes)
+crimedata$SHOOTING[crimedata$SHOOTING=="Y"] <- 1
+crimedata$SHOOTING[is.na(crimedata$SHOOTING)==T]<- 0
+crimedata$SHOOTING <- as.numeric(crimedata$SHOOTING)
+```
+
+CRIME IN BOSTON
+
+I. Problem
+
+This project analyses the crime statistic of the Boston Police Department as found on Kaggle.com (https://www.kaggle.com/sourinroy/boston-crime-dataset-updated-july-2020) and tries to find a pattern that can be used in order to predict shootings based on other information involved in an offense. This is done by applying a KNN-model on a set of 17 base variables. Knowing more about the structure of crime and the occurrence of shootings could be of practical use for crime prevention.
+
+
+II. Data
+
+The dataset consists of 501070 observations of the following 17 variables:
+
+INCIDENT_NUMBER, OFFENSE_CODE, OFFENSE_CODE_GROUP, OFFENSE_DESCRIPTION, DISTRICT, REPORTING_AREA, SHOOTING, OCCURRED_ON_DATE, YEAR, MONTH, DAY_OF_WEEK, HOUR, UCR_PART, STREET, Lat, Long, Location
+
+It is obvious that some of the variables are redundant, such as "OCCURED_ON_DATE" and "YEAR", nevertheless this will make extracting information easier. The data covers the entire period between the 15th of June 2015 until the 30th of July 2020.
+With the aim of finding a periodic pattern in the data, the total occurrences of daily offenses is plotted and analysed. 
+
+2.1. Time
+
+```{r, time, echo=FALSE}
+time <- seq.Date(from=as.Date("2015-06-15"),to=as.Date("2020-07-30"),by="days")
+time <- as.data.frame(time)
+
+crimedata <- crimedata%>%mutate(time=.$OCCURRED_ON_DATE)
+crimedata2 <- time %>% left_join(crimedata,by="time")
+crimedata2 <-crimedata2%>%group_by(time)%>%summarise(n=n())
+```
+
+```{r, timeplot}
+crimedata2 %>% ggplot(aes(time,n))+
+  geom_line()+
+  geom_vline(xintercept = as.numeric(crimedata2$time[1570]),color="red")
+
+```
+
+In the plot displayed above, a structural break in form of an increase in the level of daily crime can be noted just before the beginning of the year 2020 (marked in red).
+
+```{r, weekly & monthly,echo=FALSE}
+#
+weeklyT <- crimedata %>% group_by(DAY_OF_WEEK) %>% 
+  summarise(n=n())%>%.$n%>%
+  ts(start=c(2015,6),end=c(2020,7),frequency = 7)%>%
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+monthlyT <- crimedata %>%  group_by(MONTH)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2020,1),end=c(2020,12),frequency = 12)%>% 
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+weeklyY <- crimedata %>%  group_by(YEAR,DAY_OF_WEEK)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2015,6),end=c(2020,7),frequency = 7)%>% 
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+monthlyY <- crimedata %>%  group_by(YEAR,MONTH)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2015,6),end=c(2020,7),frequency = 12)%>% 
+  ggseasonplot()+
+  ggtitle("")+
+  geom_line()
+
+hourlyT <- crimedata %>% 
+  group_by(HOUR)%>%
+  summarise(n=n())%>% 
+  ggplot(aes(HOUR,n))+
+  geom_line()
+
+hourlyY <- crimedata %>% 
+  group_by(YEAR,HOUR)%>%
+  summarise(n=n())%>% 
+  ggplot(aes(HOUR,n,group=YEAR,color=YEAR))+
+  geom_line()
+
+```
+
+```{r, timeplot2,echo=FALSE}
+#plot results
+grid.arrange(weeklyT,monthlyT,weeklyY,monthlyY,hourlyT,hourlyY)
+
+```
+
+When taking a look at the weekly and monthly data it can be noted that crime spikes in the summer months and at the weekends. It is particularly low on mondays. While the level of crime remains relativly constant over the years (contrary to the first indication), the level is particularly low for the year 2020. A possible explanation could be the COVID-pandemic. A look at the hourly data reveals that most offenses take place at 5 p.m., while the minimum lies at 5 a.m.. The hourly pattern stays comparatively constant over time.
+
+```{r,shooting over time,echo=FALSE}
+
+weeklyT_shots <- crimedata %>% 
+  filter(SHOOTING==1)%>%
+  group_by(DAY_OF_WEEK) %>% 
+  summarise(n=n())%>%.$n%>%
+  ts(start=c(2015,6),end=c(2020,7),frequency = 7)%>%
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+monthlyT_shots <- crimedata %>%  
+  filter(SHOOTING==1)%>%
+  group_by(MONTH)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2020,1),end=c(2020,12),frequency = 12)%>% 
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+weeklyY_shots <- crimedata %>%  
+  filter(SHOOTING==1)%>%
+  group_by(YEAR,DAY_OF_WEEK)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2015,6),end=c(2020,7),frequency = 7)%>% 
+  ggseasonplot()+
+  geom_line()+
+  ggtitle("")+
+  theme(legend.position = "none")
+
+monthlyY_shots <- crimedata %>%  
+  filter(SHOOTING==1)%>%
+  group_by(YEAR,MONTH)%>%
+  summarise(n=n())%>%.$n%>% 
+  ts(start=c(2015,6),end=c(2020,7),frequency = 12)%>% 
+  ggseasonplot()+
+  ggtitle("")+
+  geom_line()
+
+hourlyT_shots <- crimedata %>% 
+  filter(SHOOTING==1)%>%
+  group_by(HOUR)%>%
+  summarise(n=n())%>% 
+  ggplot(aes(HOUR,n))+
+  geom_line()
+
+hourlyY_shots <- crimedata %>% 
+  filter(SHOOTING==1)%>%
+  group_by(YEAR,HOUR)%>%
+  summarise(n=n())%>% 
+  ggplot(aes(HOUR,n,group=YEAR,color=YEAR))+
+  geom_line()
+
+#plot results
+grid.arrange(weeklyT_shots,monthlyT_shots,weeklyY_shots,monthlyY_shots,hourlyT_shots,hourlyY_shots)
+
+```
+
+When compared to the overall occurrence of crime, it can be noted that offenses that included a shooting were a lot higher in 2020 than in the rest of the years. Also it has to be noted that the distribution of the shooting-related incidents is less seasonal, when analyzed on a yearly basis, although the total number of shootings spikes in summer as well. The hourly data shows a spike at 0 o'clock, different to the maximum of the sum of all the offenses.
+
+2.2. Location
+
+```{r, location total crime,echo=FALSE}
+#crimescenes - coordinates
+crime_geo <- crimedata %>% select(Long,Lat,DISTRICT) %>% filter(Long<(-60)|Lat>30)
+
+crime_geo %>% 
+  select(Long,Lat,DISTRICT) %>% 
+  ggplot(aes(Long,Lat),color=DISTRICT)+
+  geom_point()
+```
+
+The location of all accumulated offenses occurred during the observation period of the data matches the shape of the municipal boundaries of Boston quite well. That means that before stratifying the data more, no prior conclusion can be drawn from the plot. 
+
+Next, the distribution of offenses per district is plotted and analysed:
+
+```{r, crime pDpY, echo=FALSE}
+crime_pYD <- crimedata %>% group_by(YEAR,DISTRICT) %>% summarise(n=n())
+
+crime_pYD %>% ggplot(aes(YEAR,n,color=DISTRICT))+
+  geom_line()
+```
+
+As can be seen in the graph, the distribution does not change over the years. Districts with a high number of offenses in 2015 also tend to have a relatively high number of crimes in 2020. 
+
+```{r, type per district}
+#type by district
+
+#per year
+crime_pYD <- crimedata %>% group_by(YEAR,DISTRICT) %>% summarise(n=n())
+cpy <- crime_pYD %>% ggplot(aes(YEAR,n,color=DISTRICT))+
+  geom_line()
+scpy <- crimedata%>% 
+  filter(SHOOTING==1)%>%
+  group_by(YEAR,DISTRICT) %>% 
+  summarise(n=n())%>%
+  ggplot(aes(YEAR,n,color=DISTRICT))+
+  geom_line()
+grid.arrange(cpy,scpy,nrow=1)
+
+```
+
+As can be seen in the graph, the shooting crimes occure mostly in the districts B2,B3 and C11 and they are increasing over the years, while crimes in general are more broadly distributed and stay more or less constant over time.
+
+
+2.3. Types of crime
+
+```{r, shooting crimes,include=FALSE}
+crimedata %>% 
+  filter(SHOOTING==1)%>%
+  summarise(n=n(),p=n/nrow(crimedata))
+#total=2570
+shootingstotal <- crimedata %>% 
+  filter(SHOOTING==1 & is.na(OFFENSE_CODE_GROUP)==F)%>%
+  group_by(OFFENSE_CODE_GROUP)%>%
+  summarise(n=n(),p=n/2570)%>%
+  arrange(desc(n))
+#only first five over 5 %
+
+mainshootingcrimes <- shootingstotal %>% top_n(n=5)
+
+shootings_geo <- crimedata %>% 
+  filter(OFFENSE_CODE_GROUP %in% mainshootingcrimes$OFFENSE_CODE_GROUP & is.na(OFFENSE_CODE_GROUP)==F)%>%
+  filter(SHOOTING==1 & Lat>0 & Long < 0 & is.na(Lat)==F & is.na(Long)==F)%>%
+  select(Lat,Long,OFFENSE_CODE_GROUP)%>%
+  arrange(desc(Lat))
+```
+
+```{r,shooting crimes plot,echo=FALSE}
+
+mainshootingcrimes
+
+shootings_geo %>% ggplot(aes(Lat,Long,color=OFFENSE_CODE_GROUP))+
+  geom_point()
+```
+
+The main crimes related to shootings that account for over 50% of the shootings in boston are listed above. When plotted, it becomes obvious that these crimes are more common in the city-center than in the suburbs.The main crime connected to shootings is the aggravated assault.
+
+III. KNN-Model
+
+In continuation, the dataset will be divided into test and training set in order to be able to assess the accuracy of the dataset properly. Then, in a next step, a knn model is estimated for a set of values for k in order to find the one that optimizes the accuracy. In theory, the best model that is found by this method could be applied in order to predict the involvement of shootings in crimes in the future. Nevertheless, this will not be done in this context, i.e. no hold-out set will be predicted. The optimal number of k is found by comparing the predictions of each model to the real data of the test set. For each row of the test set, the KNN algorithm finds the k-nearest neighbors according to the criteria fixed in the creation of the training-based model and decides by majority vote whether or not this group is likely to have a shooting involved or not. In R, the knn3 function is used in order to train the algorithm and the predict function with the type "prob" is used in order to estimate the values for the test set. That means that in some cases, the output will be a value between 0 and 1 and a cutoff value has to be specified. Since in the context of shootings it might be more important to predict a shooting that actually happened as such, than predicting a shooting that did not happen, sensitivity is valued over specificity. Therefore, the cutoff value is fixed at >0.5, the lowest reasonable percentage. 
+
+```{r, seperate sets, include=FALSE} 
+crime <- crimedata %>% 
+  select(OFFENSE_CODE,Long,Lat,HOUR,YEAR,SHOOTING)%>%
+  filter(is.na(Long)==F & is.na(Lat)==F & Lat > 40 & Long < -60) 
+
+set.seed(10)
+index <- createDataPartition(crime$Lat,p=0.9,times=1,list=F)
+train <- crime[index,]
+test <- crime[-index,]
+
+# train <- train[1:1000,]
+# test <- test[1:1000,]
+```
+
+```{r, estimating models,echo=FALSE}
+#training of models 
+knn_fit1 <- knn3(SHOOTING~.,data=train,k=1)
+knn_fit2 <- knn3(SHOOTING~.,data=train,k=2)
+knn_fit3 <- knn3(SHOOTING~.,data=train,k=3)
+knn_fit4 <- knn3(SHOOTING~.,data=train,k=4)
+knn_fit5 <- knn3(SHOOTING~.,data=train,k=5)
+knn_fit6 <- knn3(SHOOTING~.,data=train,k=6)
+knn_fit7 <- knn3(SHOOTING~.,data=train,k=7)
+knn_fit8 <- knn3(SHOOTING~.,data=train,k=8)
+knn_fit9 <- knn3(SHOOTING~.,data=train,k=9)
+knn_fit10 <- knn3(SHOOTING~.,data=train,k=10)
+```
+
+```{r, prediction of the models,echo=FALSE}
+
+#prediction of models 
+#View(knn_fit$learn$X)
+
+knn_pred1 <- predict(knn_fit1,test,type="prob")
+knn_pred2 <- predict(knn_fit2,test,type="prob")
+knn_pred3 <- predict(knn_fit3,test,type="prob")
+knn_pred4 <- predict(knn_fit4,test,type="prob")
+knn_pred5 <- predict(knn_fit5,test,type="prob")
+knn_pred6 <- predict(knn_fit6,test,type="prob")
+knn_pred7 <- predict(knn_fit7,test,type="prob")
+knn_pred8 <- predict(knn_fit8,test,type="prob")
+knn_pred9 <- predict(knn_fit9,test,type="prob")
+knn_pred10 <- predict(knn_fit10,test,type="prob")
+
+#conversion of prob values to binary
+knn_pred1[knn_pred1[,2]>0.5,] <- 1
+knn_pred1[knn_pred1[,2]<=0.5,] <- 0
+knn_pred1 <- knn_pred1[,-1]
+
+knn_pred2[knn_pred2[,2]>0.5,] <- 1
+knn_pred2[knn_pred2[,2]<=0.5,] <- 0
+knn_pred2 <- knn_pred2[,-1]
+
+knn_pred3[knn_pred3[,2]>0.5,] <- 1
+knn_pred3[knn_pred3[,2]<=0.5,] <- 0
+knn_pred3 <- knn_pred3[,-1]
+
+knn_pred4[knn_pred4[,2]>0.5,] <- 1
+knn_pred4[knn_pred4[,2]<=0.5,] <- 0
+knn_pred4 <- knn_pred4[,-1]
+
+knn_pred5[knn_pred5[,2]>0.5,] <- 1
+knn_pred5[knn_pred5[,2]<=0.5,] <- 0
+knn_pred5 <- knn_pred5[,-1]
+
+knn_pred6[knn_pred6[,2]>0.5,] <- 1
+knn_pred6[knn_pred6[,2]<=0.5,] <- 0
+knn_pred6 <- knn_pred6[,-1]
+
+knn_pred7[knn_pred7[,2]>0.5,] <- 1
+knn_pred7[knn_pred7[,2]<=0.5,] <- 0
+knn_pred7 <- knn_pred7[,-1]
+
+knn_pred8[knn_pred8[,2]>0.5,] <- 1
+knn_pred8[knn_pred8[,2]<=0.5,] <- 0
+knn_pred8 <- knn_pred8[,-1]
+
+knn_pred9[knn_pred9[,2]>0.5,] <- 1
+knn_pred9[knn_pred9[,2]<=0.5,] <- 0
+knn_pred9 <- knn_pred9[,-1]
+
+knn_pred10[knn_pred10[,2]>0.5,] <- 1
+knn_pred10[knn_pred10[,2]<=0.5,] <- 0
+knn_pred10 <- knn_pred10[,-1]
+
+#confusion matrices
+u <- union(knn_pred1, test$SHOOTING)
+t <- table(factor(knn_pred1, u), factor(test$SHOOTING, u))
+res1 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred2, test$SHOOTING)
+t <- table(factor(knn_pred2, u), factor(test$SHOOTING, u))
+res2 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred3, test$SHOOTING)
+t <- table(factor(knn_pred3, u), factor(test$SHOOTING, u))
+res3 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred4, test$SHOOTING)
+t <- table(factor(knn_pred4, u), factor(test$SHOOTING, u))
+res4 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred5, test$SHOOTING)
+t <- table(factor(knn_pred5, u), factor(test$SHOOTING, u))
+res5 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred6, test$SHOOTING)
+t <- table(factor(knn_pred6, u), factor(test$SHOOTING, u))
+res6 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred7, test$SHOOTING)
+t <- table(factor(knn_pred7, u), factor(test$SHOOTING, u))
+res7 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred8, test$SHOOTING)
+t <- table(factor(knn_pred8, u), factor(test$SHOOTING, u))
+res8 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred9, test$SHOOTING)
+t <- table(factor(knn_pred9, u), factor(test$SHOOTING, u))
+res9 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+u <- union(knn_pred10, test$SHOOTING)
+t <- table(factor(knn_pred10, u), factor(test$SHOOTING, u))
+res10 <- c(confusionMatrix(t)$overall["Accuracy"],confusionMatrix(t)$byClass["Balanced Accuracy"], confusionMatrix(t)$overall["McnemarPValue"],confusionMatrix(t)$byClass["Specificity"])
+
+
+```
+
+```{r, plot accuracy,echo=FALSE}
+
+
+#visualization of accuracy
+
+accresult <- data.frame()
+accresult <- rbind(accresult,res1,res2,res3,res4,res5,res6,res7,res8,res9,res10)
+names(accresult) <- c("accuracy","balanced","McNemar","specificity")
+accresult <- cbind(accresult,k=c(1,2,3,4,5,6,7,8,9,10))
+
+
+#plot the results
+
+p1 <- accresult %>% ggplot(aes(k,accuracy))+
+  geom_line()+
+  geom_point(aes(k[2],accuracy[2]))
+p2 <- accresult %>% ggplot(aes(k,balanced))+
+  geom_line()+
+  geom_point(aes(k[2],balanced[2]))
+grid.arrange(p1, p2, ncol = 2)
+```
+
+As can be seen in the plot, the optimal value for k for the balanced accuracy would be 1 or 3. Nevertheless, the optimal value of k is decided by the accuracy in this case. This is done because the balanced accuracy is the average of sensitivity and specificity, meaning that in this case (desired high sensitivity and low specificity) it is not a good measure. The accuracy in turn is the percentage of true predictions of both cases and more suited to assess the model. Since the accuracy always increases for any increase in k, the k chosen should be the one for which the increase is maximal. According to the plot this is the case for k=2. 
+
+```{r, final model, echo=FALSE }
+
+
+u <- union(knn_pred2, test$SHOOTING)
+t <- table(factor(knn_pred2, u), factor(test$SHOOTING, u))
+finalm <- confusionMatrix(t)
+finalm
+
+```
+
+The test set results of the final model with k=2 show a very high sensitivity (0.9984420) and a very low specificity (0.2387387). Unfortunately, a look at the confusion matrix reveals that the function automatically calculated the sensitivity using value=0 as the positive value. Thus, in the context of shootings this means that an incident without shooting almost always gets classified as such, although offenses that do involve a shooting in many cases are not classified as such. That means that in order to get the best model, one should have selected according to the specificity and not to the overall accuracy. Hence, the main underlying problem is that the data contains a lot of negative values and only a few positive ones. 
+
+```{r, plot specificity}
+
+accresult %>% ggplot(aes(k,specificity))+
+  geom_line()
+
+```
+
+According to the data, k=1 would maximize the specificity, i.e. the rate of shootings that are identified as such. Althoug k would equal 1, an overfitting is most likely not given, since the true values are binary. Nevertheless, the final specificity rate would only be ~.45, meaning that shootings would be identified only in ~45% of the cases. That is why the model will not be analyzed further. 
+
+IV. Conclusion
+
+This project built a KNN model in order to predict shootings. The optimal model found was a KNN model with k=1. Unfortunately the model is most likely of no use since it fails in almost 55% of the test cases with shootings to predict the involvement of such. Further analysis could try do model the data with a different method in order to get a better result. 
+
